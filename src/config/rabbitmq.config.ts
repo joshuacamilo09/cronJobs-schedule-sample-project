@@ -1,7 +1,6 @@
 export const rabbitmqConfig = {
-  url: 'amqp://localhost:5672',
-  exchange: 'orders.exchange.v1',
-  queue: 'orders.expired.queue.v1',
+  url: process.env.RABBITMQ_URL ?? 'amqp://localhost:5672',
+  exchange: process.env.ORDERS_EXCHANGE ?? 'orders.exchange.v1',
+  queue: process.env.ORDERS_EXPIRED_QUEUE ?? 'orders.expired.queue.v1',
   routingKey: 'orders.expired',
 };
-//Em producao isso viria de env vars 

@@ -1,6 +1,7 @@
-import { Logger, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import * as amqp from 'amqplib';
 import { rabbitmqConfig } from "src/config/rabbitmq.config";
+@Injectable()
 export class OrdersConsumer implements OnModuleInit {   
 
     private readonly logger = new Logger(OrdersConsumer.name)

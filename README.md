@@ -1,98 +1,64 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Scheduled Jobs with RabbitMQ (NestJS)
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A small event-driven service that shows how to split **scheduled work** from **heavy processing**: a cron job finds expired orders and publishes an event per order to RabbitMQ, and a consumer processes those events independently.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+The pattern keeps the scheduler fast and stateless, lets the processing scale horizontally (more consumers), and means a failure while processing one order doesn't stop the job.
 
-## Description
+## How it works
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+ ┌────────────────────┐   every minute   ┌───────────────┐  publish   ┌───────────────────────────┐
+ │ OrdersScheduler    │ ───────────────▶ │ OrdersService │ ─────────▶ │ OrdersProducer            │
+ │ @Cron('*/1 * * * *')│                  │ find expired  │            │ exchange: orders.exchange │
+ └────────────────────┘                  └───────────────┘            │ (topic, durable)          │
+                                                                       └─────────────┬─────────────┘
+                                                                routing key          │
+                                                                "orders.expired"     ▼
+                                                                       ┌───────────────────────────┐
+                                                                       │ queue: orders.expired     │
+                                                                       │ (durable)                 │
+                                                                       └─────────────┬─────────────┘
+                                                                                     ▼
+                                                                       ┌───────────────────────────┐
+                                                                       │ OrdersConsumer            │
+                                                                       │ process → ack             │
+                                                                       └───────────────────────────┘
 ```
 
-## Compile and run the project
+| Component | Responsibility |
+|---|---|
+| `OrdersScheduler` | Cron trigger only: no business logic, so it never blocks |
+| `OrdersService` | Domain logic: finds expired orders (mocked here) and publishes one event per order |
+| `OrdersProducer` | Owns the AMQP channel, declares the **topic exchange**, publishes **persistent** messages |
+| `OrdersConsumer` | Declares and binds the **durable queue**, consumes and **acks** each message after processing |
+
+Design choices:
+
+- **Topic exchange + routing key** (`orders.expired`): new consumers (emails, analytics, etc.) can subscribe to the same event without changing the producer.
+- **Durable exchange/queue + persistent messages**: events survive a broker restart.
+- **Manual ack**: a message is only removed from the queue after it has been processed.
+- **Versioned names** (`*.v1`): the message contract can evolve without breaking existing consumers.
+
+## Running locally
+
+Requirements: Node.js 20+ and Docker.
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+docker compose up -d     # RabbitMQ on :5672, management UI on http://localhost:15672 (guest/guest)
+npm install
+npm run start:dev
 ```
 
-## Run tests
+The logs show the job running every minute, the events being published and the consumer processing them. In the management UI you can see the exchange, the queue and the message rates.
 
-```bash
-# unit tests
-$ npm run test
+| Variable | Default |
+|---|---|
+| `RABBITMQ_URL` | `amqp://localhost:5672` |
+| `ORDERS_EXCHANGE` | `orders.exchange.v1` |
+| `ORDERS_EXPIRED_QUEUE` | `orders.expired.queue.v1` |
 
-# e2e tests
-$ npm run test:e2e
+Notes on cron vs schedulers vs queues are in [`docs/scheduling-notes.md`](docs/scheduling-notes.md).
 
-# test coverage
-$ npm run test:cov
-```
+## Tech stack
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+TypeScript · NestJS 11 · @nestjs/schedule · RabbitMQ (amqplib) · Docker Compose
